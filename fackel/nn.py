@@ -1,6 +1,5 @@
 import jax, jax.numpy as jnp
 
-
 def linear(in_dim, out_dim):
     def init(key):
         wkey, bkey = jax.random.split(key)
@@ -47,7 +46,7 @@ def conv2d(in_ch, out_ch, kernel_size, stride=1, padding="SAME"):
         kh, kw = kernel_size, kernel_size
     else:
         kh, kw = kernel_size
-        
+
     if isinstance(stride, int):
         sh, sw = stride, stride
     else:
