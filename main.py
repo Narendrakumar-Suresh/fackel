@@ -1,18 +1,9 @@
-"""
-Small CNN built entirely from fackel (conv2d + linear + relu + adam),
-trained on MNIST.
-
-Needs: pip install scikit-learn  (just for the dataset loader, not for training)
-First run downloads MNIST (~55MB) via sklearn and caches it locally under
-~/scikit_learn_data, so it only fetches once.
-"""
-
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 from fackel.nn import conv2d, linear
 from fackel.activations import relu
+from fackel.loss import cross_entropy_loss
 from fackel.optimizers import adam
 
 
@@ -26,15 +17,18 @@ def load_mnist(test_size=10000):
     from sklearn.datasets import fetch_openml
 
     mnist = fetch_openml("mnist_784", version=1, as_frame=False)
-    x = mnist.data.astype("float32") / 255.0          # (70000, 784)
-    y = mnist.target.astype("int64")                   # (70000,)
+    x = mnist.data.astype("float32") / 255.0  # (70000, 784)
+    y = mnist.target.astype("int64")  # (70000,)
 
-    x = x.reshape(-1, 28, 28, 1)                        # (70000, 28, 28, 1)
+    x = x.reshape(-1, 28, 28, 1)  # (70000, 28, 28, 1)
 
     x_train, x_test = x[:-test_size], x[-test_size:]
     y_train, y_test = y[:-test_size], y[-test_size:]
 
-    return (jnp.array(x_train), jnp.array(y_train)), (jnp.array(x_test), jnp.array(y_test))
+    return (jnp.array(x_train), jnp.array(y_train)), (
+        jnp.array(x_test),
+        jnp.array(y_test),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -62,10 +56,10 @@ def forward(params, x):
     x = relu(x)
     x = apply_c2(params["c2"], x)
     x = relu(x)
-    x = x.reshape(x.shape[0], -1)          # flatten (N, H, W, C) -> (N, H*W*C)
+    x = x.reshape(x.shape[0], -1)  # flatten (N, H, W, C) -> (N, H*W*C)
     x = apply_l1(params["l1"], x)
     x = relu(x)
-    x = apply_l2(params["l2"], x)          # logits (N, 10)
+    x = apply_l2(params["l2"], x)  # logits (N, 10)
     return x
 
 
@@ -74,8 +68,7 @@ def forward(params, x):
 # ---------------------------------------------------------------------------
 def loss_fn(params, x, y):
     logits = forward(params, x)
-    onehot = jax.nn.one_hot(y, num_classes=10)
-    return jnp.mean(-jnp.sum(onehot * jax.nn.log_softmax(logits), axis=-1))
+    return cross_entropy_loss(logits, y, num_classes=10)
 
 
 def accuracy(params, x, y):
@@ -101,7 +94,7 @@ def data_iterator(x, y, batch_size, key):
     n = x.shape[0]
     perm = jax.random.permutation(key, n)
     for i in range(0, n - batch_size + 1, batch_size):
-        idx = perm[i:i + batch_size]
+        idx = perm[i : i + batch_size]
         yield x[idx], y[idx]
 
 
@@ -118,7 +111,9 @@ if __name__ == "__main__":
 
     for epoch in range(epochs):
         key, shuffle_key = jax.random.split(key)
-        for step, (xb, yb) in enumerate(data_iterator(x_train, y_train, batch_size, shuffle_key)):
+        for step, (xb, yb) in enumerate(
+            data_iterator(x_train, y_train, batch_size, shuffle_key)
+        ):
             params, opt_state, loss = train_step(params, opt_state, xb, yb)
             if step % 100 == 0:
                 print(f"epoch {epoch}  step {step:4d}  loss {loss:.4f}")

@@ -1,5 +1,6 @@
 import jax, jax.numpy as jnp
 
+
 def linear(in_dim, out_dim):
     def init(key):
         wkey, bkey = jax.random.split(key)
@@ -11,6 +12,7 @@ def linear(in_dim, out_dim):
         return x @ params["w"] + params["b"]
 
     return init, apply
+
 
 def _conv_init_params(key, kernel_shape, out_ch, fan_in):
     wkey, bkey = jax.random.split(key)
