@@ -1,26 +1,22 @@
 import jax
 import jax.numpy as jnp
 
-from fackel.nn import conv2d, linear
+from fackel.nn import conv2d, linear, sequential, dropout, flatten
 from fackel.activations import relu
 from fackel.loss import cross_entropy_loss
-from fackel.optimizers import adam
+from fackel.optimizers import adamw
+from fackel.ops import clip_grad_norm
+from fackel.schedulers import cosine_annealing_with_warmup
 
 
-# ---------------------------------------------------------------------------
-# 1. Data
-# ---------------------------------------------------------------------------
 def load_mnist(test_size=10000):
-    """Loads MNIST via sklearn's fetch_openml. Swap this out for whatever
-    loader you already have -- the rest of the file only cares that x is
-    (N, 28, 28, 1) float32 in [0,1] and y is (N,) int labels."""
     from sklearn.datasets import fetch_openml
 
     mnist = fetch_openml("mnist_784", version=1, as_frame=False)
-    x = mnist.data.astype("float32") / 255.0  # (70000, 784)
-    y = mnist.target.astype("int64")  # (70000,)
+    x = mnist.data.astype("float32") / 255.0
+    y = mnist.target.astype("int64")
 
-    x = x.reshape(-1, 28, 28, 1)  # (70000, 28, 28, 1)
+    x = x.reshape(-1, 28, 28, 1)
 
     x_train, x_test = x[:-test_size], x[-test_size:]
     y_train, y_test = y[:-test_size], y[-test_size:]
@@ -31,95 +27,92 @@ def load_mnist(test_size=10000):
     )
 
 
-# ---------------------------------------------------------------------------
-# 2. Model: conv -> relu -> conv -> relu -> flatten -> linear -> linear
-# ---------------------------------------------------------------------------
-init_c1, apply_c1 = conv2d(in_ch=1, out_ch=8, kernel_size=3, stride=1, padding="SAME")
-init_c2, apply_c2 = conv2d(in_ch=8, out_ch=16, kernel_size=3, stride=2, padding="SAME")
-# after stride-2 conv on 28x28 input -> 14x14 spatial, 16 channels -> flatten = 14*14*16
-init_l1, apply_l1 = linear(in_dim=14 * 14 * 16, out_dim=64)
-init_l2, apply_l2 = linear(in_dim=64, out_dim=10)
+def infinite_batches(x, y, batch_size, key):
+    n = x.shape[0]
+    while True:
+        key, shuffle_key = jax.random.split(key)
+        perm = jax.random.permutation(shuffle_key, n)
+        for i in range(0, n - batch_size + 1, batch_size):
+            idx = perm[i : i + batch_size]
+            yield x[idx], y[idx]
 
 
-def model_init(key):
-    k1, k2, k3, k4 = jax.random.split(key, 4)
-    return {
-        "c1": init_c1(k1),
-        "c2": init_c2(k2),
-        "l1": init_l1(k3),
-        "l2": init_l2(k4),
-    }
+# 1. Model Definition
+init_fn, apply_fn = sequential(
+    conv2d(in_ch=1, out_ch=8, kernel_size=3, stride=1, padding="SAME"),
+    relu,
+    conv2d(in_ch=8, out_ch=16, kernel_size=3, stride=2, padding="SAME"),
+    relu,
+    flatten,
+    linear(in_dim=14 * 14 * 16, out_dim=64),
+    relu,
+    dropout(0.5),
+    linear(in_dim=64, out_dim=10),
+)
+
+# 2. Scheduler and Optimizer Initialization
+total_steps = 1500
+lr_schedule = cosine_annealing_with_warmup(
+    max_lr=1e-3, warmup_steps=150, total_steps=total_steps, end_lr=1e-5
+)
+
+opt_init, opt_update = adamw(lr=lr_schedule)
 
 
-def forward(params, x):
-    x = apply_c1(params["c1"], x)
-    x = relu(x)
-    x = apply_c2(params["c2"], x)
-    x = relu(x)
-    x = x.reshape(x.shape[0], -1)  # flatten (N, H, W, C) -> (N, H*W*C)
-    x = apply_l1(params["l1"], x)
-    x = relu(x)
-    x = apply_l2(params["l2"], x)  # logits (N, 10)
-    return x
-
-
-# ---------------------------------------------------------------------------
-# 3. Loss + optimizer + train step
-# ---------------------------------------------------------------------------
-def loss_fn(params, x, y):
-    logits = forward(params, x)
-    return cross_entropy_loss(logits, y, num_classes=10)
-
-
-def accuracy(params, x, y):
-    logits = forward(params, x)
+@jax.jit
+def accuracy(params, model_state, x, y):
+    logits, _ = apply_fn(params, model_state, x, is_training=False)
     preds = jnp.argmax(logits, axis=-1)
     return jnp.mean(preds == y)
 
 
-opt_init, opt_update = adam(lr=1e-3)
-
-
 @jax.jit
-def train_step(params, opt_state, x, y):
-    loss, grads = jax.value_and_grad(loss_fn)(params, x, y)
+def train_step(params, opt_state, model_state, key, x, y):
+    key, step_key = jax.random.split(key)
+
+    def loss_fn(p):
+        logits, new_model_state = apply_fn(
+            p, model_state, x, rng=step_key, is_training=True
+        )
+        loss = cross_entropy_loss(logits, y, num_classes=10)
+        return loss, new_model_state
+
+    (loss, new_model_state), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+
+    grads = clip_grad_norm(grads, max_norm=1.0)
     params, opt_state = opt_update(grads, opt_state, params)
-    return params, opt_state, loss
 
-
-# ---------------------------------------------------------------------------
-# 4. Training loop
-# ---------------------------------------------------------------------------
-def data_iterator(x, y, batch_size, key):
-    n = x.shape[0]
-    perm = jax.random.permutation(key, n)
-    for i in range(0, n - batch_size + 1, batch_size):
-        idx = perm[i : i + batch_size]
-        yield x[idx], y[idx]
+    return params, opt_state, new_model_state, key, loss
 
 
 if __name__ == "__main__":
     (x_train, y_train), (x_test, y_test) = load_mnist()
 
     key = jax.random.PRNGKey(0)
-    key, init_key = jax.random.split(key)
-    params = model_init(init_key)
+    key, init_key, data_key = jax.random.split(key, 3)
+
+    params, model_state = init_fn(init_key)
     opt_state = opt_init(params)
 
     batch_size = 128
-    epochs = 3
+    batch_stream = infinite_batches(x_train, y_train, batch_size, key=data_key)
 
-    for epoch in range(epochs):
-        key, shuffle_key = jax.random.split(key)
-        for step, (xb, yb) in enumerate(
-            data_iterator(x_train, y_train, batch_size, shuffle_key)
-        ):
-            params, opt_state, loss = train_step(params, opt_state, xb, yb)
-            if step % 100 == 0:
-                print(f"epoch {epoch}  step {step:4d}  loss {loss:.4f}")
+    print(
+        "Starting training with explicit routing, gradient clipping, and LR scheduling..."
+    )
+    for step in range(total_steps):
+        xb, yb = next(batch_stream)
 
-        test_acc = accuracy(params, x_test[:1000], y_test[:1000])
-        print(f"epoch {epoch} done -- test acc (first 1000): {test_acc:.4f}")
+        params, opt_state, model_state, key, loss = train_step(
+            params, opt_state, model_state, key, xb, yb
+        )
 
-    final_acc = accuracy(params, x_test, y_test)
+        if step % 100 == 0:
+            print(f"step {step:4d}  loss {loss:.4f}")
+
+        if step > 0 and step % 500 == 0:
+            acc = accuracy(params, model_state, x_test[:1000], y_test[:1000])
+            print(f"--- step {step} eval acc: {acc:.4f}")
+
+    final_acc = accuracy(params, model_state, x_test, y_test)
     print(f"final test accuracy: {final_acc:.4f}")

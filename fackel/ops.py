@@ -29,26 +29,35 @@ def norm(t):
 
 
 def orthogonalize(g, steps=5, eps=1e-7):
-    """Muon's Newton-Schulz orthogonalization."""
-
+    """Muon's 5th-order Newton-Schulz orthogonalization."""
     if g.ndim != 2:
         return g
 
-    transpose = g.shape[0] > g.shape[1]
+    transpose = g.shape[0] < g.shape[1]
+    x = g.T if transpose else g
 
-    x = jnp.where(transpose, g.T, g)
+    x = x / (jnp.linalg.norm(x, ord="fro") + eps)
 
-    x = x / (jnp.linalg.norm(x) + eps)
+    a, b, c = 3.4445, -4.7750, 2.0315
+    eye = jnp.eye(x.shape[1])
 
-    a = 3.4445
-    b = -4.7750
-    c = 2.0315
+    for _ in range(steps):
+        xTx = x.T @ x
+        x = x @ (a * eye + b * xTx + c * (xTx @ xTx))
 
-    def body(_, x):
-        A = x @ x.T
-        B = b * A + c * (A @ A)
-        return a * x + B @ x
+    x = x.T if transpose else x
 
-    x = jax.lax.fori_loop(0, steps, body, x)
+    scale = jnp.sqrt(max(g.shape[0], g.shape[1]))
+    return x * scale
 
-    return jnp.where(transpose, x.T, x)
+
+def clip_grad_norm(grads, max_norm=1.0):
+    """
+    Clips the global norm of a PyTree of gradients.
+    """
+    g_norm = norm(grads)
+    clip_coef = max_norm / (g_norm + 1e-6)
+    clip_coef = jnp.minimum(1.0, clip_coef)
+    clipped_grads = tmap(lambda g: g * clip_coef, grads)
+
+    return clipped_grads
