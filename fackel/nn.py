@@ -15,14 +15,16 @@ def linear(in_dim, out_dim):
 
     return init, apply
 
+
 def _conv_init_params(key, kernel_shape, out_ch):
 
     w = he_normal()(key, kernel_shape)
     b = jnp.zeros(out_ch)
     return {"w": w, "b": b}
 
+
 def conv1d(in_ch, out_ch, kernel_size, stride=1, padding="SAME"):
-    
+
     kernel_shape = (kernel_size, in_ch, out_ch)
 
     def init(key):
@@ -39,6 +41,7 @@ def conv1d(in_ch, out_ch, kernel_size, stride=1, padding="SAME"):
         return y + params["b"], state
 
     return init, apply
+
 
 def conv2d(in_ch, out_ch, kernel_size, stride=1, padding="SAME"):
     if isinstance(kernel_size, int):
@@ -68,6 +71,7 @@ def conv2d(in_ch, out_ch, kernel_size, stride=1, padding="SAME"):
 
     return init, apply
 
+
 def conv3d(in_ch, out_ch, kernel_size, stride=1, padding="SAME"):
     if isinstance(kernel_size, int):
         kd, kh, kw = kernel_size, kernel_size, kernel_size
@@ -94,6 +98,7 @@ def conv3d(in_ch, out_ch, kernel_size, stride=1, padding="SAME"):
         return y + params["b"], state
 
     return init, apply
+
 
 def sequential(*layers):
     def init(key):
@@ -129,8 +134,10 @@ def sequential(*layers):
 
     return init, apply
 
+
 def flatten(x):
     return x.reshape(x.shape[0], -1)
+
 
 def dropout(rate):
     def init(key):
@@ -151,6 +158,7 @@ def dropout(rate):
         return out, state
 
     return init, apply
+
 
 def batch_norm(num_features, momentum=0.9, epsilon=1e-5):
 
@@ -185,6 +193,7 @@ def batch_norm(num_features, momentum=0.9, epsilon=1e-5):
 
     return init, apply
 
+
 def rnn(in_dim, out_dim):
     def init(key):
         k1, k2 = jax.random.split(key)
@@ -209,6 +218,7 @@ def rnn(in_dim, out_dim):
         return jnp.swapaxes(out_seq, 0, 1), state
 
     return init, apply
+
 
 def gru(in_dim, out_dim):
     def init(key):
@@ -245,6 +255,7 @@ def gru(in_dim, out_dim):
         return jnp.swapaxes(out_seq, 0, 1), state
 
     return init, apply
+
 
 def lstm(in_dim, out_dim):
     def init(key):
@@ -288,46 +299,71 @@ def lstm(in_dim, out_dim):
 
     return init, apply
 
+
 def rglru(in_dim, out_dim):
     def init(key):
         k1, k2, k3, k4 = jax.random.split(key, 4)
-        
+
         w_r = glorot_uniform()(k1, (in_dim, out_dim))
         w_i = glorot_uniform()(k2, (in_dim, out_dim))
         w_x = glorot_uniform()(k3, (in_dim, out_dim))
-        
+
         b_r = jnp.zeros(out_dim)
         b_i = jnp.zeros(out_dim)
         b_x = jnp.zeros(out_dim)
-        
+
         theta = jax.random.uniform(k4, (out_dim,), minval=-1.0, maxval=1.0)
-        
+
         return {
-            "w_r": w_r, "w_i": w_i, "w_x": w_x, 
-            "b_r": b_r, "b_i": b_i, "b_x": b_x, 
-            "theta": theta
+            "w_r": w_r,
+            "w_i": w_i,
+            "w_x": w_x,
+            "b_r": b_r,
+            "b_i": b_i,
+            "b_x": b_x,
+            "theta": theta,
         }, {}
 
     def apply(params, state, x, **kwargs):
         r_pre = x @ params["w_r"] + params["b_r"]
         i_pre = x @ params["w_i"] + params["b_i"]
         x_proj = x @ params["w_x"] + params["b_x"]
-        
+
         r = jax.nn.sigmoid(r_pre)
         i = jax.nn.sigmoid(i_pre)
-        
+
         c = 8.0 * jax.nn.softplus(params["theta"])
         a = jnp.exp(-c * r)
-        
+
         m = jnp.sqrt(1.0 - a**2) * i * x_proj
-        
+
         def combine(e1, e2):
             a1, m1 = e1
             a2, m2 = e2
             return a1 * a2, a2 * m1 + m2
 
         _, out_seq = jax.lax.associative_scan(combine, (a, m), axis=1)
-        
+
         return out_seq, state
+
+    return init, apply
+
+
+def embedding(num_embeddings, embedding_dim):
+    """
+    Standard lookup table that stores embeddings of a fixed dictionary and size.
+    """
+
+    def init(key):
+        # Initializing with a truncated normal distribution or scaled normal
+        # (mean=0, std=0.02) is standard practice for NLP embeddings.
+        w = jax.random.normal(key, (num_embeddings, embedding_dim)) * 0.02
+        return {"w": w}, {}
+
+    def apply(params, state, x, **kwargs):
+        # x is an array of integer indices.
+        # JAX handles multi-dimensional indexing automatically (e.g., batch x seq_len)
+        out = params["w"][x]
+        return out, state
 
     return init, apply

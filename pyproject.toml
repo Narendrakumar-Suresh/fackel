@@ -6,8 +6,10 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "jax>=0.10.2",
-    "pandas>=3.0.3",
-    "ruff>=0.15.21",
     "safetensors>=0.8.0",
-    "scikit-learn>=1.9.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.22",
 ]
