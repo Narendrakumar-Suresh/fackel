@@ -193,6 +193,26 @@ def batch_norm(num_features, momentum=0.9, epsilon=1e-5):
 
     return init, apply
 
+# --- Core Primitive Additions ---
+
+def rmsnorm(dim, eps=1e-6):
+    def init(key):
+        return {"scale": jnp.ones(dim)}, {}
+
+    def apply(params, state, x, **kwargs):
+        # Calculate mean across the last dimension (hidden feature size)
+        rms = jnp.sqrt(jnp.mean(x**2, axis=-1, keepdims=True) + eps)
+        
+        # Enforce robust broadcasting by matching scale shape to input rank
+        scale = params["scale"]
+        if x.ndim > 1:
+            # Reshape scale from (Dim,) to (1, ..., 1, Dim) to match input rank
+            scale_shape = [1] * (x.ndim - 1) + [dim]
+            scale = scale.reshape(scale_shape)
+            
+        return (x / rms) * scale, state
+
+    return init, apply
 
 def rnn(in_dim, out_dim):
     def init(key):
